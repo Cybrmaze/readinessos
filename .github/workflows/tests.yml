@@ -1,0 +1,67 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: readinessos_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      # Real DB, real schema, real Postgres triggers (append-only
+      # submissions/audit_log) enforced against every test run -- this is
+      # the same dedicated readinessos_test database pattern used locally
+      # (see tests/conftest.py), never the production database.
+      RXOS_DB_HOST: localhost
+      RXOS_DB_PORT: 5432
+      RXOS_DB_USER: postgres
+      RXOS_DB_PASSWORD: postgres
+      RXOS_DB_NAME: readinessos_test
+      # CI-only secret -- never the real deployed RXOS_JWT_SECRET.
+      RXOS_JWT_SECRET: ci-test-secret-do-not-use-in-production
+      # Mailgun/Telnyx are intentionally left unset: notify_email.py and
+      # notify_sms.py fail soft (skip the send, return False) when
+      # unconfigured, and no test in this suite depends on a real send
+      # succeeding.
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Wait for Postgres
+        run: |
+          until pg_isready -h localhost -p 5432 -U postgres; do sleep 1; done
+        env:
+          PGPASSWORD: postgres
+
+      - name: Apply schema
+        run: psql -h localhost -U postgres -d readinessos_test -f schema.sql
+        env:
+          PGPASSWORD: postgres
+
+      - name: Run tests
+        run: pytest tests/ -v
