@@ -1,0 +1,786 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>ReadinessOS</title>
+<link rel="stylesheet" href="/styles.css" />
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const {useState, useEffect, useMemo, useCallback} = React;
+
+const AREAS = [
+  {id:"IC", name:"Infection Control", color:"#0a9f8b"},
+  {id:"EOC", name:"Environment of Care", color:"#3b82f6"},
+  {id:"EAP", name:"Emergency Action Plan", color:"#f59e0b"},
+  {id:"MM", name:"Medication Management", color:"#8b5cf6"},
+  {id:"PI", name:"Quality & Performance", color:"#ec4899"},
+];
+const AREA_BY_ID = Object.fromEntries(AREAS.map(a => [a.id, a]));
+const CADENCES = ["daily","weekly","biweekly","monthly","quarterly","semiannual","annual"];
+const ANSWER_OPTIONS = ["Yes","No","N/A","Needs action"];
+
+function getToken(){ return localStorage.getItem("rxos_token") || ""; }
+function setToken(t){ if(t) localStorage.setItem("rxos_token", t); else localStorage.removeItem("rxos_token"); }
+
+async function api(path, opts={}){
+  const headers = Object.assign({}, opts.headers||{});
+  const token = getToken();
+  if(token) headers["Authorization"] = "Bearer " + token;
+  let body = opts.body;
+  if(body && !(body instanceof FormData)){
+    headers["Content-Type"] = "application/json";
+    body = JSON.stringify(body);
+  }
+  const resp = await fetch("/api" + path, Object.assign({}, opts, {headers, body}));
+  if(resp.status === 204) return null;
+  let data = null;
+  try { data = await resp.json(); } catch(e) {}
+  if(!resp.ok){
+    const msg = (data && data.detail) ? data.detail : ("Request failed (" + resp.status + ")");
+    throw new Error(typeof msg === "string" ? msg : JSON.stringify(msg));
+  }
+  return data;
+}
+
+function fmtDate(iso){
+  if(!iso) return "--";
+  const d = new Date(iso);
+  return d.toLocaleDateString(undefined, {month:"short", day:"numeric", year:"numeric"});
+}
+
+// ---------------------------------------------------------------- Auth screen
+
+function AuthScreen({onAuthed}){
+  const [tab, setTab] = useState("login");
+  const [err, setErr] = useState("");
+  const [msg, setMsg] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const [loginEmail, setLoginEmail] = useState("");
+  const [loginPassword, setLoginPassword] = useState("");
+  const [forgotEmail, setForgotEmail] = useState("");
+
+  const [facilityName, setFacilityName] = useState("");
+  const [adminName, setAdminName] = useState("");
+  const [adminEmail, setAdminEmail] = useState("");
+  const [password, setPassword] = useState("");
+
+  async function submitLogin(e){
+    e.preventDefault(); setErr(""); setBusy(true);
+    try {
+      const data = await api("/auth/login", {method:"POST", body:{email:loginEmail, password:loginPassword}});
+      setToken(data.access_token);
+      onAuthed();
+    } catch(e){ setErr(e.message); } finally { setBusy(false); }
+  }
+
+  async function submitForgot(e){
+    e.preventDefault(); setErr(""); setMsg(""); setBusy(true);
+    try {
+      const data = await api("/auth/forgot-password", {method:"POST", body:{email: forgotEmail}});
+      setMsg(data.message);
+    } catch(e){ setErr(e.message); } finally { setBusy(false); }
+  }
+
+  async function submitSignup(e){
+    e.preventDefault(); setErr(""); setBusy(true);
+    try {
+      const data = await api("/auth/setup-facility", {method:"POST", body:{
+        facility_name: facilityName, admin_name: adminName, admin_email: adminEmail, password,
+      }});
+      setToken(data.access_token);
+      onAuthed();
+    } catch(e){ setErr(e.message); } finally { setBusy(false); }
+  }
+
+  return (
+    <div className="centered">
+      <div className="loginbox">
+        <div className="brand"><b>RX</b><span><strong>ReadinessOS</strong><small>Survey & drill command center</small></span></div>
+        <div className="tabs">
+          <button className={tab==="login"?"active":""} onClick={()=>{setTab("login"); setErr(""); setMsg("");}}>Log in</button>
+          <button className={tab==="signup"?"active":""} onClick={()=>{setTab("signup"); setErr(""); setMsg("");}}>New facility</button>
+        </div>
+        {err && <div className="error">{err}</div>}
+        {msg && <div className="notice"><span>{msg}</span></div>}
+        {tab==="login" ? (
+          <form onSubmit={submitLogin}>
+            <label className="field">Email
+              <input type="email" required value={loginEmail} onChange={e=>setLoginEmail(e.target.value)} />
+            </label>
+            <label className="field">Password
+              <input type="password" required value={loginPassword} onChange={e=>setLoginPassword(e.target.value)} />
+            </label>
+            <button className="primary wide" disabled={busy} type="submit">Log in</button>
+            <button type="button" className="secondary wide" style={{marginTop:8}} onClick={()=>{setTab("forgot"); setErr(""); setMsg("");}}>Forgot password?</button>
+          </form>
+        ) : tab==="forgot" ? (
+          <form onSubmit={submitForgot}>
+            <p className="muted">Enter your email and we'll send a link to reset your password.</p>
+            <label className="field">Email
+              <input type="email" required value={forgotEmail} onChange={e=>setForgotEmail(e.target.value)} />
+            </label>
+            <button className="primary wide" disabled={busy} type="submit">Send reset link</button>
+            <button type="button" className="secondary wide" style={{marginTop:8}} onClick={()=>{setTab("login"); setErr(""); setMsg("");}}>Back to log in</button>
+          </form>
+        ) : (
+          <form onSubmit={submitSignup}>
+            <label className="field">Facility name
+              <input required value={facilityName} onChange={e=>setFacilityName(e.target.value)} />
+            </label>
+            <label className="field">Your name (administrator)
+              <input required value={adminName} onChange={e=>setAdminName(e.target.value)} />
+            </label>
+            <label className="field">Your email
+              <input type="email" required value={adminEmail} onChange={e=>setAdminEmail(e.target.value)} />
+            </label>
+            <label className="field">Password (min 8 characters)
+              <input type="password" required minLength={8} value={password} onChange={e=>setPassword(e.target.value)} />
+            </label>
+            <button className="primary wide" disabled={busy} type="submit">Create facility</button>
+          </form>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------- Reset password (standalone screen)
+
+function ResetPasswordScreen({token, onDone}){
+  const [newPassword, setNewPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function submit(e){
+    e.preventDefault(); setErr("");
+    if(newPassword !== confirm){ setErr("Passwords do not match."); return; }
+    setBusy(true);
+    try {
+      const data = await api("/auth/reset-password", {method:"POST", body:{token, new_password:newPassword}});
+      setToken(data.access_token);
+      window.history.replaceState({}, "", "/");
+      onDone();
+    } catch(e){ setErr(e.message); } finally { setBusy(false); }
+  }
+
+  return (
+    <div className="centered">
+      <div className="loginbox">
+        <div className="brand"><b>RX</b><span><strong>ReadinessOS</strong><small>Set a new password</small></span></div>
+        {err && <div className="error">{err}</div>}
+        <form onSubmit={submit}>
+          <label className="field">New password (min 8 characters)
+            <input type="password" required minLength={8} value={newPassword} onChange={e=>setNewPassword(e.target.value)} />
+          </label>
+          <label className="field">Confirm new password
+            <input type="password" required minLength={8} value={confirm} onChange={e=>setConfirm(e.target.value)} />
+          </label>
+          <button className="primary wide" disabled={busy} type="submit">Set password</button>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------- My account (change password)
+
+function MyAccount({user}){
+  const [current, setCurrent] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [err, setErr] = useState("");
+  const [msg, setMsg] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function submit(e){
+    e.preventDefault(); setErr(""); setMsg("");
+    if(newPassword !== confirm){ setErr("New passwords do not match."); return; }
+    setBusy(true);
+    try {
+      await api("/auth/change-password", {method:"POST", body:{current_password:current, new_password:newPassword}});
+      setMsg("Password updated.");
+      setCurrent(""); setNewPassword(""); setConfirm("");
+    } catch(e){ setErr(e.message); } finally { setBusy(false); }
+  }
+
+  return (
+    <>
+      <em>MY ACCOUNT</em>
+      <h2>{user.name}</h2>
+      <p className="muted">{user.email} &middot; {user.role}{user.workspace ? " (" + user.workspace + ")" : ""}</p>
+      <h3>Change password</h3>
+      {err && <div className="error">{err}</div>}
+      {msg && <div className="success"><span>&#10003;</span><span>{msg}</span></div>}
+      <form onSubmit={submit}>
+        <label className="field">Current password
+          <input type="password" required value={current} onChange={e=>setCurrent(e.target.value)} />
+        </label>
+        <label className="field">New password (min 8 characters)
+          <input type="password" required minLength={8} value={newPassword} onChange={e=>setNewPassword(e.target.value)} />
+        </label>
+        <label className="field">Confirm new password
+          <input type="password" required minLength={8} value={confirm} onChange={e=>setConfirm(e.target.value)} />
+        </label>
+        <button className="primary wide" disabled={busy} type="submit">Update password</button>
+      </form>
+    </>
+  );
+}
+
+// ---------------------------------------------------------------- Metric card
+
+function Metric({icon, tone, label, value, sub}){
+  return (
+    <article>
+      <b className={"metricIcon " + tone}>{icon}</b>
+      <span><small>{label}</small><strong>{value}</strong><em>{sub}</em></span>
+    </article>
+  );
+}
+
+// ---------------------------------------------------------------- Work drawer
+
+function Work({occurrenceId, close, onDone}){
+  const [detail, setDetail] = useState(null);
+  const [step, setStep] = useState(0);
+  const [answers, setAnswers] = useState({});
+  const [notes, setNotes] = useState("");
+  const [sign, setSign] = useState("");
+  const [file, setFile] = useState(null);
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    api("/occurrences/" + occurrenceId).then(d => {
+      setDetail(d);
+      if(d.draft){
+        const draft = typeof d.draft === "string" ? JSON.parse(d.draft) : d.draft;
+        setStep(draft.step || 0);
+        setAnswers(draft.answers || {});
+        setNotes(draft.notes || "");
+        setSign(draft.sign || "");
+      }
+    }).catch(e => setErr(e.message));
+  }, [occurrenceId]);
+
+  if(!detail) return <><em>LOADING</em><h2>Please wait...</h2></>;
+
+  const checklist = typeof detail.checklist === "string" ? JSON.parse(detail.checklist) : (detail.checklist || []);
+  const area = AREA_BY_ID[detail.workspace];
+  const answeredCount = Object.keys(answers).length;
+
+  if(detail.status === "complete" && detail.submission){
+    const sub = detail.submission;
+    const subAnswers = typeof sub.answers === "string" ? JSON.parse(sub.answers) : sub.answers;
+    return (
+      <>
+        <em>COMPLETION RECORD</em>
+        <h2>{detail.title}</h2>
+        <div className="success">
+          <span>&#10003;</span>
+          <span><b>Submitted and locked</b><small>Completion record retained for the audit trail.</small></span>
+        </div>
+        <dl>
+          <div><dt>Workspace</dt><dd>{area ? area.name : detail.workspace}</dd></div>
+          <div><dt>Cadence</dt><dd>{detail.cadence}</dd></div>
+          <div><dt>Submitted by</dt><dd>{sub.signature_name}</dd></div>
+          <div><dt>Submitted at</dt><dd>{fmtDate(sub.submitted_at)}</dd></div>
+        </dl>
+        {sub.notes && <p><b>Notes:</b> {sub.notes}</p>}
+        <div className="review">
+          {checklist.map((q, i) => (
+            <span key={i}>{q}<b>{subAnswers[i] || "--"}</b></span>
+          ))}
+        </div>
+        {detail.evidence && detail.evidence.length > 0 && (
+          <div style={{marginTop:16}}>
+            <b>Evidence:</b>
+            {detail.evidence.map(f => (
+              <div key={f.file_id} style={{marginTop:6}}>
+                <button className="secondary" onClick={() => downloadEvidence(f.file_id, f.original_filename)}>
+                  {f.original_filename}
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+        <button className="secondary wide" style={{marginTop:20}} onClick={close}>Close record</button>
+      </>
+    );
+  }
+
+  async function saveDraft(nextStep){
+    try {
+      await api("/occurrences/" + occurrenceId + "/draft", {method:"PUT", body:{
+        draft: {step: nextStep, answers, notes, sign},
+      }});
+    } catch(e){ /* fail-soft: draft save should never block navigation */ }
+  }
+
+  async function submit(){
+    setErr(""); setBusy(true);
+    try {
+      const sub = await api("/occurrences/" + occurrenceId + "/submit", {method:"POST", body:{
+        answers, notes, signature_name: sign,
+      }});
+      if(file){
+        const fd = new FormData();
+        fd.append("file", file);
+        await api("/submissions/" + sub.submission_id + "/evidence", {method:"POST", body: fd});
+      }
+      onDone();
+    } catch(e){ setErr(e.message); } finally { setBusy(false); }
+  }
+
+  return (
+    <>
+      <em>{detail.workspace} &middot; {detail.cadence}</em>
+      <h2>{detail.title}</h2>
+      <div className="workmeta">
+        <span>Due <b>{fmtDate(detail.due_at)}</b></span>
+        <span className={"tag " + detail.status}>{detail.status}</span>
+      </div>
+      <div className="steps">
+        <b className={step===0?"on":""}>1 &middot; Checklist</b>
+        <b className={step===1?"on":""}>2 &middot; Evidence</b>
+        <b className={step===2?"on":""}>3 &middot; Attest</b>
+      </div>
+      {err && <div className="error">{err}</div>}
+      {step===0 && (
+        <div className="survey">
+          <p>Answer every item. Select "Needs action" when follow-up is required.</p>
+          {checklist.map((q, i) => (
+            <fieldset key={i}>
+              <legend>{i+1}. {q}</legend>
+              {ANSWER_OPTIONS.map(v => (
+                <label key={v}>
+                  <input type="radio" name={"q"+i} checked={answers[i]===v} onChange={()=>setAnswers({...answers,[i]:v})} />
+                  {v}
+                </label>
+              ))}
+            </fieldset>
+          ))}
+        </div>
+      )}
+      {step===1 && (
+        <div className="evidence">
+          <label className="field">Findings and corrective-action notes
+            <textarea value={notes} onChange={e=>setNotes(e.target.value)} placeholder="Document observations, responsible person and target date." />
+          </label>
+          <label className="upload">
+            <span>&#128206;</span>
+            <b>{file ? file.name : "Attach photo or document"}</b>
+            <small>PDF or image, up to 15 MB</small>
+            <input type="file" onChange={e=>setFile(e.target.files[0]||null)} />
+          </label>
+        </div>
+      )}
+      {step===2 && (
+        <div className="attest">
+          <h3>Review and certify</h3>
+          <p>I certify that this activity was completed accurately and that any identified deficiency has been documented for follow-up.</p>
+          <label className="field">Completed by &mdash; type full name
+            <input value={sign} onChange={e=>setSign(e.target.value)} placeholder="Full legal name" />
+          </label>
+          <div className="review">
+            <span>Checklist answered <b>{answeredCount} of {checklist.length}</b></span>
+            <span>Evidence <b>{file ? file.name : "No attachment"}</b></span>
+            <span>Notes <b>{notes ? "Included" : "None entered"}</b></span>
+          </div>
+        </div>
+      )}
+      <div className="workbuttons">
+        <button className="secondary" onClick={()=>{saveDraft(step); close();}}>Save draft</button>
+        {step>0 && <button className="secondary" onClick={()=>{saveDraft(step-1); setStep(step-1);}}>&larr; Back</button>}
+        {step<2 ? (
+          <button className="primary" disabled={step===0 && answeredCount<checklist.length} onClick={()=>{saveDraft(step+1); setStep(step+1);}}>Continue &rarr;</button>
+        ) : (
+          <button className="primary" disabled={busy || !sign || answeredCount<checklist.length} onClick={submit}>Submit & lock record</button>
+        )}
+      </div>
+    </>
+  );
+}
+
+async function downloadEvidence(fileId, filename){
+  const token = getToken();
+  const resp = await fetch("/api/evidence/" + fileId, {headers:{Authorization:"Bearer "+token}});
+  if(!resp.ok) return;
+  const blob = await resp.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = filename; document.body.appendChild(a); a.click();
+  a.remove(); URL.revokeObjectURL(url);
+}
+
+// ---------------------------------------------------------------- Add activity drawer
+
+function AddActivity({close, onAdded}){
+  const [workspace, setWorkspace] = useState("IC");
+  const [title, setTitle] = useState("");
+  const [cadence, setCadence] = useState("weekly");
+  const [checklistText, setChecklistText] = useState("");
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function submit(){
+    setErr(""); setBusy(true);
+    try {
+      const checklist = checklistText.split("\n").map(s=>s.trim()).filter(Boolean);
+      await api("/activities", {method:"POST", body:{workspace, title, cadence, checklist}});
+      onAdded();
+    } catch(e){ setErr(e.message); } finally { setBusy(false); }
+  }
+
+  return (
+    <>
+      <em>NEW ACTIVITY</em>
+      <h2>Add survey, audit or drill</h2>
+      <p className="muted">For readiness work only &mdash; not real-emergency or medication-operation forms.</p>
+      {err && <div className="error">{err}</div>}
+      <label className="field">Activity name
+        <input value={title} onChange={e=>setTitle(e.target.value)} />
+      </label>
+      <div className="grid">
+        <label className="field">Workspace
+          <select value={workspace} onChange={e=>setWorkspace(e.target.value)}>
+            {AREAS.map(a => <option value={a.id} key={a.id}>{a.name}</option>)}
+          </select>
+        </label>
+        <label className="field">Cadence
+          <select value={cadence} onChange={e=>setCadence(e.target.value)}>
+            {CADENCES.map(c => <option value={c} key={c}>{c}</option>)}
+          </select>
+        </label>
+      </div>
+      <label className="field">Checklist questions (one per line)
+        <textarea value={checklistText} onChange={e=>setChecklistText(e.target.value)} placeholder={"Soap available?\nStaff observed washing hands?"} />
+      </label>
+      <button className="primary wide" disabled={!title || busy} onClick={submit}>Add to schedule</button>
+    </>
+  );
+}
+
+// ---------------------------------------------------------------- Setup drawer
+
+function Setup({facility, onFacilitySaved}){
+  const [name, setName] = useState(facility.name);
+  const [users, setUsers] = useState([]);
+  const [newUser, setNewUser] = useState({name:"", email:"", phone:"", password:"", role:"officer", workspace:"IC", sms_opt_in:false});
+  const [err, setErr] = useState("");
+
+  const loadUsers = useCallback(() => { api("/users").then(setUsers).catch(e=>setErr(e.message)); }, []);
+  useEffect(() => { loadUsers(); }, [loadUsers]);
+
+  async function saveFacility(){
+    try { await api("/facility", {method:"PATCH", body:{name}}); onFacilitySaved(name); } catch(e){ setErr(e.message); }
+  }
+
+  async function addUser(){
+    setErr("");
+    try {
+      await api("/users", {method:"POST", body: newUser});
+      setNewUser({name:"", email:"", phone:"", password:"", role:"officer", workspace:"IC", sms_opt_in:false});
+      loadUsers();
+    } catch(e){ setErr(e.message); }
+  }
+
+  async function toggleActive(u){
+    try { await api("/users/" + u.user_id, {method:"PATCH", body:{active: !u.active}}); loadUsers(); }
+    catch(e){ setErr(e.message); }
+  }
+
+  async function resetUserPassword(u){
+    const newPassword = window.prompt("New temporary password for " + u.name + " (min 8 characters):");
+    if(!newPassword) return;
+    try { await api("/users/" + u.user_id, {method:"PATCH", body:{new_password: newPassword}}); alert("Password reset. " + u.name + " has been emailed."); }
+    catch(e){ setErr(e.message); }
+  }
+
+  return (
+    <>
+      <em>FACILITY CONFIGURATION</em>
+      <h2>Reusable for any facility</h2>
+      {err && <div className="error">{err}</div>}
+      <label className="field">Facility name
+        <input value={name} onChange={e=>setName(e.target.value)} />
+      </label>
+      <button className="secondary" onClick={saveFacility}>Save facility name</button>
+
+      <h3>Staff & roles</h3>
+      {users.map(u => (
+        <div className="person" key={u.user_id}>
+          <i style={{background: u.workspace ? AREA_BY_ID[u.workspace]?.color : "#999"}} />
+          <b>{u.name} <small className="muted">({u.role}{u.workspace ? ", " + u.workspace : ""})</small></b>
+          <span>{u.email}</span>
+          <span>{u.active ? "Active" : "Deactivated"}</span>
+          <span style={{display:"flex", gap:6}}>
+            <button className="secondary" onClick={()=>toggleActive(u)}>{u.active ? "Deactivate" : "Reactivate"}</button>
+            <button className="secondary" onClick={()=>resetUserPassword(u)}>Reset password</button>
+          </span>
+        </div>
+      ))}
+
+      <h3>Add staff member</h3>
+      <div className="grid">
+        <label className="field">Name<input value={newUser.name} onChange={e=>setNewUser({...newUser,name:e.target.value})} /></label>
+        <label className="field">Email<input type="email" value={newUser.email} onChange={e=>setNewUser({...newUser,email:e.target.value})} /></label>
+      </div>
+      <div className="grid">
+        <label className="field">Mobile (for SMS)<input value={newUser.phone} onChange={e=>setNewUser({...newUser,phone:e.target.value})} placeholder="+1..." /></label>
+        <label className="field">Temporary password<input type="password" value={newUser.password} onChange={e=>setNewUser({...newUser,password:e.target.value})} /></label>
+      </div>
+      <div className="grid">
+        <label className="field">Role
+          <select value={newUser.role} onChange={e=>setNewUser({...newUser,role:e.target.value})}>
+            <option value="admin">Administrator</option>
+            <option value="officer">Workspace officer</option>
+            <option value="staff">Staff</option>
+          </select>
+        </label>
+        <label className="field">Workspace
+          <select value={newUser.workspace||""} onChange={e=>setNewUser({...newUser,workspace:e.target.value||null})}>
+            <option value="">(none / individually assigned)</option>
+            {AREAS.map(a => <option value={a.id} key={a.id}>{a.name}</option>)}
+          </select>
+        </label>
+      </div>
+      <label className="checks"><label><input type="checkbox" checked={newUser.sms_opt_in} onChange={e=>setNewUser({...newUser,sms_opt_in:e.target.checked})} /> SMS reminders enabled</label></label>
+      <div className="callout"><span>&#9993;</span><span>Delivery uses secure server credentials. No API keys are ever stored in a staff member's browser.</span></div>
+      <button className="primary wide" disabled={!newUser.name || !newUser.email || !newUser.password} onClick={addUser}>Add staff member</button>
+    </>
+  );
+}
+
+// ---------------------------------------------------------------- Dashboard
+
+function Dashboard({user, onLogout}){
+  const [facility, setFacility] = useState(null);
+  const [occurrences, setOccurrences] = useState([]);
+  const [filter, setFilter] = useState("ALL");
+  const [q, setQ] = useState("");
+  const [menu, setMenu] = useState(false);
+  const [drawer, setDrawer] = useState(null); // 'setup' | 'add' | 'work' | null
+  const [selectedOccurrenceId, setSelectedOccurrenceId] = useState(null);
+  const [err, setErr] = useState("");
+
+  const isAdmin = user.role === "admin";
+
+  const load = useCallback(() => {
+    api("/facility").then(setFacility).catch(e=>setErr(e.message));
+    api("/occurrences").then(setOccurrences).catch(e=>setErr(e.message));
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  // Magic-link deep entry: open the Work drawer for the occurrence once data is loaded
+  useEffect(() => {
+    const target = window.__rxosJumpToOccurrence;
+    if(target && occurrences.length){
+      window.__rxosJumpToOccurrence = null;
+      setSelectedOccurrenceId(target);
+      setDrawer("work");
+    }
+  }, [occurrences]);
+
+  // one row per activity: the earliest non-complete occurrence, or the
+  // most recently completed one if nothing is pending.
+  const rows = useMemo(() => {
+    const byActivity = {};
+    for(const o of occurrences){
+      const cur = byActivity[o.activity_id];
+      if(!cur){ byActivity[o.activity_id] = o; continue; }
+      const oPending = o.status !== "complete", curPending = cur.status !== "complete";
+      if(oPending && !curPending) byActivity[o.activity_id] = o;
+      else if(oPending === curPending){
+        if(oPending && new Date(o.due_at) < new Date(cur.due_at)) byActivity[o.activity_id] = o;
+        if(!oPending && new Date(o.due_at) > new Date(cur.due_at)) byActivity[o.activity_id] = o;
+      }
+    }
+    return Object.values(byActivity);
+  }, [occurrences]);
+
+  const shown = useMemo(() => rows.filter(r => {
+    const matchesFilter = filter==="ALL" ? true : filter==="MY" ? (r.status==="due"||r.status==="overdue") : r.workspace===filter;
+    const matchesQ = (r.title + " " + r.cadence).toLowerCase().includes(q.toLowerCase());
+    return matchesFilter && matchesQ;
+  }), [rows, filter, q]);
+
+  const count = s => rows.filter(r => r.status===s).length;
+
+  function exportCsv(){
+    const token = getToken();
+    fetch("/api/admin/export.csv", {headers:{Authorization:"Bearer "+token}})
+      .then(r => r.blob())
+      .then(blob => {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url; a.download = "readinessos_export.csv"; document.body.appendChild(a); a.click();
+        a.remove(); URL.revokeObjectURL(url);
+      });
+  }
+
+  if(!facility) return <div className="centered"><p className="muted">Loading ReadinessOS...</p></div>;
+
+  const visibleAreas = isAdmin ? AREAS : (user.workspace ? AREAS.filter(a=>a.id===user.workspace) : []);
+
+  return (
+    <main>
+      <header>
+        <button className="icon mobile" onClick={()=>setMenu(!menu)}>&#9776;</button>
+        <div className="brand"><b>RX</b><span><strong>ReadinessOS</strong><small>Survey & drill command center</small></span></div>
+        <div className="facility"><span><small>FACILITY</small><strong>{facility.name}</strong></span></div>
+        <div className="head">
+          <button className="icon"><span>&#128276;</span>{count("overdue")>0 && <i>{count("overdue")}</i>}</button>
+          <button className="avatar">{user.name.slice(0,2).toUpperCase()}</button>
+          <button className="secondary" onClick={onLogout}>Log out</button>
+        </div>
+      </header>
+      <div className="shell">
+        <aside className={menu?"open":""}>
+          <nav>
+            {isAdmin && <button className={filter==="ALL"?"active":""} onClick={()=>setFilter("ALL")}>Command center</button>}
+            <button className={filter==="MY"?"active":""} onClick={()=>{setFilter("MY"); setMenu(false);}}>My work today</button>
+            <p>WORKSPACES</p>
+            {visibleAreas.map(a => (
+              <button key={a.id} className={filter===a.id?"active":""} onClick={()=>{setFilter(a.id); setMenu(false);}}>
+                <i style={{background:a.color}} />{a.name}
+              </button>
+            ))}
+            <p>ACCOUNT</p>
+            <button onClick={()=>{setDrawer("account"); setMenu(false);}}>My account</button>
+            {isAdmin && <>
+              <p>MANAGE</p>
+              <button onClick={()=>setDrawer("setup")}>Staff, roles & facility setup</button>
+            </>}
+          </nav>
+          <div className="coverage"><b>Compliance workspace</b><span>Surveys, audits, reviews and drills across five workspaces.</span></div>
+        </aside>
+        <section className="content">
+          <div className="title">
+            <div>
+              <em>READINESS WORKSPACE</em>
+              <h1>{filter==="MY" ? "My work today" : filter==="ALL" ? "Survey & drill command center" : (AREA_BY_ID[filter]?.name || filter)}</h1>
+              <p>Find, open and complete assigned readiness work from one place.</p>
+            </div>
+            <div className="actions">
+              {isAdmin && <button className="secondary" onClick={exportCsv}>Export</button>}
+              {isAdmin && <button className="primary" onClick={()=>setDrawer("add")}>+ Add activity</button>}
+            </div>
+          </div>
+          {err && <div className="error">{err}</div>}
+          <div className="quick">
+            <span><b>{count("due")+count("overdue")} items need attention</b><small>Open a survey or drill and your progress saves automatically.</small></span>
+            <button onClick={()=>setFilter("MY")}>View my work &rarr;</button>
+          </div>
+          <div className="metrics">
+            <Metric icon="!" tone="red" label="Overdue" value={count("overdue")} sub="Escalation required" />
+            <Metric icon="&#128276;" tone="amber" label="Due now" value={count("due")} sub="Needs staff action" />
+            <Metric icon="&#10003;" tone="green" label="Completed" value={count("complete")} sub="Audit records" />
+            <Metric icon="&#128197;" tone="blue" label="Scheduled" value={rows.length} sub="Five workspaces" />
+          </div>
+          <div className="notice">
+            <span><span>&#128276;</span><span><b>Email + SMS escalation workflow</b><small>7 days before &rarr; due time &rarr; officer &rarr; Administrator. Every attempt is recorded.</small></span></span>
+            {isAdmin && <button onClick={()=>setDrawer("setup")}>Configure delivery</button>}
+          </div>
+          <div className="card">
+            <div className="toolbar">
+              <label><span>&#128269;</span><input value={q} onChange={e=>setQ(e.target.value)} placeholder="Find a survey, audit or drill" /></label>
+              <span>{shown.length} activities</span>
+            </div>
+            <div className="scroll">
+              <table>
+                <thead><tr><th>Activity</th><th>Workspace</th><th>Due</th><th>Status</th><th>Action</th></tr></thead>
+                <tbody>
+                  {shown.map(r => (
+                    <tr key={r.activity_id}>
+                      <td><b>{r.title}</b><small>{r.cadence}</small></td>
+                      <td><span className="ws"><i style={{background:AREA_BY_ID[r.workspace]?.color}} />{r.workspace}</span></td>
+                      <td>{fmtDate(r.due_at)}</td>
+                      <td><span className={"tag " + r.status}>{r.status}</span></td>
+                      <td>
+                        <button className={r.status==="complete"?"complete":"start"} onClick={()=>{setSelectedOccurrenceId(r.occurrence_id); setDrawer("work");}}>
+                          {r.status==="complete" ? "View record" : "Start"}
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+      </div>
+      {drawer && (
+        <div className="overlay" onMouseDown={()=>setDrawer(null)}>
+          <section className={drawer==="work" ? "drawer work" : "drawer"} onMouseDown={e=>e.stopPropagation()}>
+            <button className="close" onClick={()=>setDrawer(null)}>&times;</button>
+            {drawer==="setup" && <Setup facility={facility} onFacilitySaved={(name)=>{setFacility({...facility,name}); setDrawer(null);}} />}
+            {drawer==="add" && <AddActivity close={()=>setDrawer(null)} onAdded={()=>{setDrawer(null); load();}} />}
+            {drawer==="account" && <MyAccount user={user} />}
+            {drawer==="work" && selectedOccurrenceId && (
+              <Work occurrenceId={selectedOccurrenceId} close={()=>setDrawer(null)} onDone={()=>{setDrawer(null); load();}} />
+            )}
+          </section>
+        </div>
+      )}
+    </main>
+  );
+}
+
+// ---------------------------------------------------------------- Root
+
+function App(){
+  const [ready, setReady] = useState(false);
+  const [authed, setAuthed] = useState(false);
+  const [user, setUser] = useState(null);
+
+  const params = new URLSearchParams(window.location.search);
+  const isResetPasswordRoute = window.location.pathname === "/reset-password" && params.get("token");
+
+  async function checkAuth(){
+    if(!getToken()){ setAuthed(false); setReady(true); return; }
+    try {
+      const me = await api("/auth/me");
+      setUser(me); setAuthed(true);
+    } catch(e){
+      setToken(""); setAuthed(false);
+    } finally { setReady(true); }
+  }
+
+  useEffect(() => {
+    if(isResetPasswordRoute){ setReady(true); return; }
+    const magicToken = params.get("token");
+    if(magicToken){
+      api("/auth/magic-link/consume", {method:"POST", body:{token: magicToken}})
+        .then(data => {
+          setToken(data.access_token);
+          if(data.occurrence_id) window.__rxosJumpToOccurrence = data.occurrence_id;
+          window.history.replaceState({}, "", window.location.pathname);
+          checkAuth();
+        })
+        .catch(() => { checkAuth(); });
+    } else {
+      checkAuth();
+    }
+  }, []);
+
+  if(isResetPasswordRoute){
+    return <ResetPasswordScreen token={params.get("token")} onDone={checkAuth} />;
+  }
+  if(!ready) return <div className="centered"><p className="muted">Loading ReadinessOS...</p></div>;
+  if(!authed) return <AuthScreen onAuthed={checkAuth} />;
+  return <Dashboard user={user} onLogout={()=>{setToken(""); setAuthed(false);}} />;
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
